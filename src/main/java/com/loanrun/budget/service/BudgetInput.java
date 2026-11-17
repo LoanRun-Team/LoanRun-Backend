@@ -24,7 +24,7 @@ final class BudgetInput {
     }
     static YearMonth month(String value) {
         try {
-            if (value == null || !value.matches("[0-9]{4}-(0[1-9]|1[0-2])")) throw new DateTimeParseException("Invalid", "", 0);
+            if (value == null || value.startsWith("0000") || !value.matches("[0-9]{4}-(0[1-9]|1[0-2])")) throw new DateTimeParseException("Invalid", "", 0);
             return YearMonth.parse(value);
         } catch (DateTimeParseException ex) {
             throw new ApiException(HttpStatus.BAD_REQUEST, "INVALID_MONTH", "월 형식을 확인해 주세요.");
