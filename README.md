@@ -57,7 +57,16 @@ CI executes the same build without production secrets.
   Repeated identical transitions do not advance revision. Billing is always disabled.
 
 Current routes: GET/PATCH `/api/users/me/`, GET/PATCH `/api/settings/subscription/`,
-GET/PATCH `/api/settings/notifications/`. Further domain endpoints are tracked locally as pending until implemented and tested.
+GET/PATCH `/api/settings/notifications/`, GET/PUT `/api/budgets/profile/`,
+GET `/api/onboarding/`, POST `/api/onboarding/complete/`, GET `/api/settings/export/`.
+Onboarding and CSV require Team 1's owner-scoped loan/plan ports. Until those implementations are integrated,
+they return `503 SERVICE_UNAVAILABLE`; runtime empty-data stubs are not installed. Finance profile APIs operate independently.
+Further domain endpoints are tracked locally as pending until implemented and tested.
+
+Finance profile PUT synchronizes the profile's income type and snapshots each month's expected values.
+Confirmed/past months and the current month's original discretionary limit are preserved.
+The CSV includes the original nine columns followed by `fee_amount,savings_used_amount`, as required by the detailed export rules.
+It uses UTF-8 BOM, CSV quoting and spreadsheet formula protection.
 
 ## Shared development
 

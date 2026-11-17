@@ -29,8 +29,10 @@ public class OriginGuardFilter extends OncePerRequestFilter {
     @Override
     protected void doFilterInternal(HttpServletRequest request, HttpServletResponse response, FilterChain chain)
             throws ServletException, IOException {
-        if (request.getRequestURI().startsWith("/api/") && !SAFE_METHODS.contains(request.getMethod())
-                && !config.allowedOrigins().contains(request.getHeader("Origin"))) {
+        String origin = request.getHeader("Origin");
+        boolean disallowedOrigin = origin != null && !config.allowedOrigins().contains(origin);
+        boolean missingMutationOrigin = origin == null && !SAFE_METHODS.contains(request.getMethod());
+        if (request.getRequestURI().startsWith("/api/") && (disallowedOrigin || missingMutationOrigin)) {
             response.setStatus(403);
             response.setContentType("application/json");
             response.setCharacterEncoding("UTF-8");

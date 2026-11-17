@@ -1,11 +1,16 @@
 package com.loanrun;
 
 import static org.assertj.core.api.Assertions.*;
+import static org.mockito.ArgumentMatchers.*;
+import static org.mockito.Mockito.*;
 
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.loanrun.common.contract.CurrentUserProvider;
 import com.loanrun.common.contract.RevisionPort;
+import com.loanrun.common.contract.LoanQueryPort;
+import com.loanrun.common.contract.PlanQueryPort;
+import com.loanrun.common.contract.FinanceModels.*;
 import com.loanrun.common.idempotency.IdempotencyService;
 import java.net.CookieManager;
 import java.net.CookiePolicy;
@@ -16,6 +21,9 @@ import java.net.http.HttpResponse;
 import java.time.Clock;
 import java.time.Instant;
 import java.time.ZoneId;
+import java.time.LocalDate;
+import java.math.BigDecimal;
+import java.util.List;
 import java.util.concurrent.*;
 import java.util.concurrent.atomic.AtomicInteger;
 import org.junit.jupiter.api.Test;
@@ -29,6 +37,7 @@ import org.springframework.context.annotation.Primary;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.test.context.DynamicPropertyRegistry;
 import org.springframework.test.context.DynamicPropertySource;
+import org.springframework.test.context.bean.override.mockito.MockitoBean;
 import org.springframework.transaction.support.TransactionTemplate;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.RestController;
@@ -57,6 +66,8 @@ class BootstrapIntegrationTest {
     @Autowired IdempotencyService idempotency;
     @Autowired RevisionPort revisions;
     @Autowired TransactionTemplate transactions;
+    @MockitoBean LoanQueryPort loans;
+    @MockitoBean PlanQueryPort plans;
 
     @TestConfiguration
     static class TestConfig {
@@ -167,10 +178,12 @@ class BootstrapIntegrationTest {
             assertThat(json(response).path("code").asText()).isEqualTo("ORIGIN_NOT_ALLOWED");
         }
         assertThat(request(client, "GET", "/api/users/me", null, null).statusCode()).isEqualTo(404);
+        assertThat(json(request(client, "GET", "/api/users/me/", null, "https://attacker.invalid")).path("code").asText()).isEqualTo("ORIGIN_NOT_ALLOWED");
         assertThat(json(request(client, "POST", "/api/users/me/", "{}", "http://localhost:5173")).path("code").asText()).isEqualTo("METHOD_NOT_ALLOWED");
         assertThat(request(client, "POST", "/api/auth/login/", "{}", "http://localhost:5173").statusCode()).isEqualTo(404);
         assertThat(request(client, "DELETE", "/api/users/me/", null, "http://localhost:5173").statusCode()).isEqualTo(405);
         assertThat(json(request(client, "GET", "/actuator/health", null, null)).path("status").asText()).isEqualTo("UP");
+        assertThat(request(client, "PATCH", "/api/users/me/", "{\"name\":\"" + "x".repeat(1024 * 1024) + "\"}", "http://localhost:5173").statusCode()).isEqualTo(400);
         assertThat(clock.getZone()).isEqualTo(ZoneId.of("Asia/Seoul"));
     }
 
@@ -197,5 +210,93 @@ class BootstrapIntegrationTest {
             "IDEMPOTENCY_CONFLICT", () -> { revisions.bump(id, "TEST"); throw new IllegalStateException("rollback"); })));
         assertThat(revisions.current(id)).isEqualTo(1);
         assertThat(jdbc.queryForObject("SELECT count(*) FROM idempotency_records WHERE user_id=?", Long.class, id)).isEqualTo(1);
+    }
+
+    private String regularFinance() {
+        return """
+            {"monthly_income":3000000,"income_type":"REGULAR","payday":25,"fixed_essential_expenses":800000,
+            "variable_essential_expenses":200000,"discretionary_expenses":500000,"savings":200000,"emergency_fund":null}
+            """;
+    }
+
+    @Test
+    void financeProfilePersistsZeroAndNullAndKeepsEachUsersBudgetSeparate() throws Exception {
+        var client = browser();
+        long id = userId(client);
+        assertThat(request(client, "GET", "/api/budgets/profile/", null, null).statusCode()).isEqualTo(404);
+        var saved = request(client, "PUT", "/api/budgets/profile/", regularFinance(), "http://localhost:5173");
+        assertThat(saved.statusCode()).isEqualTo(200);
+        var profile = json(saved).path("data");
+        assertThat(profile.path("essential_expenses").longValue()).isEqualTo(1000000);
+        assertThat(profile.path("emergency_fund").isNull()).isTrue();
+        assertThat(json(request(client, "GET", "/api/users/me/", null, null)).path("data").path("income_type").asText()).isEqualTo("REGULAR");
+        assertThat(request(browser(), "GET", "/api/budgets/profile/", null, null).statusCode()).isEqualTo(404);
+        var changed = regularFinance().replace("500000", "700000").replace("\"emergency_fund\":null", "\"emergency_fund\":0");
+        assertThat(request(client, "PUT", "/api/budgets/profile/", changed, "http://localhost:5173").statusCode()).isEqualTo(200);
+        assertThat(jdbc.queryForObject("SELECT discretionary_limit FROM monthly_budgets WHERE user_id=?", Long.class, id)).isEqualTo(500000);
+        assertThat(jdbc.queryForObject("SELECT discretionary_expenses FROM monthly_budgets WHERE user_id=?", Long.class, id)).isEqualTo(700000);
+        assertThat(json(request(client, "GET", "/api/budgets/profile/", null, null)).path("data").path("emergency_fund").longValue()).isZero();
+        assertThat(request(client, "PATCH", "/api/users/me/", "{\"income_type\":\"IRREGULAR\"}", "http://localhost:5173").statusCode()).isEqualTo(400);
+    }
+
+    @Test
+    void financeValidationRejectsTypeCoercionNegativeAmountsAndInvalidPaydaysAtomically() throws Exception {
+        var client = browser();
+        for (String body : new String[]{regularFinance().replace("3000000", "\"3000000\""), regularFinance().replace("3000000", "3.1"),
+                regularFinance().replace("3000000", "-1"), regularFinance().replace("\"payday\":25", "\"payday\":null"),
+                regularFinance().replace("\"payday\":25", "\"payday\":32"), regularFinance().replace("REGULAR", "IRREGULAR")}) {
+            var response = request(client, "PUT", "/api/budgets/profile/", body, "http://localhost:5173");
+            assertThat(response.statusCode()).isEqualTo(400);
+            assertThat(json(response).path("code").asText()).isEqualTo("BUDGET_VALIDATION_ERROR");
+        }
+        assertThat(request(client, "GET", "/api/budgets/profile/", null, null).statusCode()).isEqualTo(404);
+        String irregular = regularFinance().replace("REGULAR", "IRREGULAR").replace("\"payday\":25", "\"payday\":null").replace("3000000", "0");
+        assertThat(request(client, "PUT", "/api/budgets/profile/", irregular, "http://localhost:5173").statusCode()).isEqualTo(200);
+        assertThat(json(request(client, "GET", "/api/budgets/profile/", null, null)).path("data").path("payday").isNull()).isTrue();
+    }
+
+    @Test
+    void onboardingRequiresOwnedActiveLoansFinanceAndEverySavedGoalAndCompletesOnlyOnce() throws Exception {
+        var client = browser();
+        long id = userId(client);
+        when(loans.activeLoans(eq(id), any())).thenReturn(List.of());
+        assertThat(json(request(client, "GET", "/api/onboarding/", null, null)).path("data").path("next_step").asText()).isEqualTo("LOAN");
+        var incomplete = request(client, "POST", "/api/onboarding/complete/", null, "http://localhost:5173");
+        assertThat(incomplete.statusCode()).isEqualTo(400);
+        assertThat(json(incomplete).path("code").asText()).isEqualTo("ONBOARDING_INCOMPLETE");
+        var loan = new LoanTerms(101, id, "가상 대출", LoanType.CREDIT, 12000000, 12000000, LocalDate.of(2026,11,17),
+            new BigDecimal("6.0"), RateType.FIXED, RepaymentMethod.EQUAL_PAYMENT, null, null, LocalDate.of(2026,11,25), 25,
+            LocalDate.of(2027,11,25), null, null, null, PrepaymentPolicy.KEEP_PAYMENT, FeeMethod.NONE, null, null, null, 0, 0, LoanStatus.ACTIVE, null);
+        when(loans.activeLoans(eq(id), any())).thenReturn(List.of(loan));
+        assertThat(json(request(client, "GET", "/api/onboarding/", null, null)).path("data").path("next_step").asText()).isEqualTo("FINANCE");
+        request(client, "PUT", "/api/budgets/profile/", regularFinance(), "http://localhost:5173");
+        assertThat(json(request(client, "GET", "/api/onboarding/", null, null)).path("data").path("next_step").asText()).isEqualTo("REPAYMENT_GOAL");
+        when(plans.currentPlans(eq(id), any())).thenReturn(List.of(new PlanSnapshot(101, true, loan.maturityDate(), loan.maturityDate(), 0, 0, 0, "MATURITY", null, LocalDate.of(2026,11,25), 1)));
+        long revision = revisions.current(id);
+        var completed = request(client, "POST", "/api/onboarding/complete/", null, "http://localhost:5173");
+        assertThat(completed.statusCode()).isEqualTo(200);
+        assertThat(json(completed).path("data").path("dashboard_ready").booleanValue()).isTrue();
+        request(client, "POST", "/api/onboarding/complete/", null, "http://localhost:5173");
+        assertThat(revisions.current(id)).isEqualTo(revision + 1);
+        assertThat(json(request(browser(), "GET", "/api/onboarding/", null, null)).path("data").path("registered_loan_ids").isEmpty()).isTrue();
+    }
+
+    @Test
+    void exportUsesOwnedProjectionsAndProtectsCsvCellsWhilePreservingFeesAndSavingsUse() throws Exception {
+        var client = browser();
+        long id = userId(client);
+        when(loans.exportLoans(id)).thenReturn(List.of(new ExportLoan(101, " =SUM(1,2)", 12000000)));
+        when(loans.exportPayments(eq(id), any())).thenReturn(List.of(new ExportPayment(101, "가상 \"대출\"", LocalDate.of(2026,11,16), 10000, 7000, 1000, 1000, 1000, 500)));
+        var response = request(client, "GET", "/api/settings/export/?start_month=2026-11&end_month=2026-11", null, null);
+        assertThat(response.statusCode()).isEqualTo(200);
+        assertThat(response.headers().firstValue("Content-Type").orElseThrow()).contains("text/csv");
+        assertThat(response.headers().firstValue("Content-Disposition").orElseThrow()).contains("ronrun-export.csv");
+        assertThat(response.body()).startsWith("\uFEFFrecord_type,").contains("\"' =SUM(1,2)\"", "fee_amount,savings_used_amount", "\"가상 \"\"대출\"\"\"");
+        verify(loans).exportPayments(id, new DateRange(LocalDate.of(2026,11,1), LocalDate.of(2026,11,30)));
+        assertThat(request(client, "GET", "/api/settings/export/?format=xlsx", null, null).statusCode()).isEqualTo(400);
+        assertThat(json(request(client, "GET", "/api/settings/export/?start_month=2026-12&end_month=2026-11", null, null)).path("code").asText()).isEqualTo("INVALID_DATE_RANGE");
+        assertThat(request(client, "GET", "/api/settings/export/?start_month=2026-1", null, null).statusCode()).isEqualTo(400);
+        var other = request(browser(), "GET", "/api/settings/export/", null, null);
+        assertThat(other.body()).doesNotContain("SUM", "가상");
     }
 }

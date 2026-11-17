@@ -53,9 +53,12 @@ plan saves consume capacity; ledger changes call recalculation without calling a
 | V4 | Team 1 | Individual plans and overall strategy versions |
 | V5 | Team 2 | Report jobs, strategy candidates, comparison settings |
 
-Only V1 is part of bootstrap. Notification defaults are included in V1 so those APIs can be tested without applying V5 ahead of V2–V4.
+Only V1 is part of bootstrap. The finance/onboarding feature adds V3; keep that feature unmerged until V2 integration ordering is confirmed.
+Notification defaults are included in V1 so those APIs can be tested without applying V5 ahead of V2–V4.
 Coordinate migration ordering before merging later stages. Do not create empty placeholder migrations for another owner.
 Never edit a migration after sharing/applying it. Hibernate validates; Flyway creates schemas. No H2 substitution or ddl-auto=create.
+Fresh test databases may apply V1 and V3 without placeholders. A developer database that already applied V3 must coordinate a one-time
+Flyway out-of-order migration when V2 arrives; production must first validate the complete sequence V1→V2→V3→V4→V5.
 
 `demo_users.id` is BIGINT and is the ownership FK target. Lock this row before mutations. `revision` is a data counter under this lock,
 not a JPA `@Version`; increment once per original data change. Preview/report freshness must also include business date/month.

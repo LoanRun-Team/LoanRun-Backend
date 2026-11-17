@@ -20,7 +20,7 @@ public final class JsonPatch {
     public static String text(JsonNode node, String field, boolean nullable, int maxLength) {
         JsonNode value = node.get(field);
         if (nullable && value != null && value.isNull()) return null;
-        if (value == null || !value.isTextual() || value.textValue().isBlank()
+        if (value == null || !value.isTextual() || (!nullable && value.textValue().isBlank())
                 || value.textValue().codePointCount(0, value.textValue().length()) > maxLength) {
             throw ApiException.validation(field, "문자열의 길이와 값을 확인해 주세요.");
         }
