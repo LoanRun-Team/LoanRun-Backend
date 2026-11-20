@@ -48,9 +48,7 @@ public class PlanReadService {
             var capacity=budget.capacity(user,month);overrides=budget.monthlyOverrides(user,month);
             if(capacity==null||overrides==null||!month.equals(capacity.month()))throw ApiException.unavailable();recurring=capacity.recurringCap();
             if(recurring!=null&&recurring<0)throw ApiException.unavailable();
-            var seen=new HashSet<Long>();
-            for(var a:overrides)if(a==null||!active.contains(a.loanId())||!seen.add(a.loanId())||a.cashAmount()<0||a.allocationType()==null
-                ||a.priority()!=null&&a.priority()<1)throw ApiException.unavailable();
+            overrides=activeOwnedAmounts(user,active,overrides);
         }
         String overall="LOCKED",strategy=null;boolean exists=false;Map<Long,Integer> priorities=new HashMap<>();
         if(access==PlanType.PRO) {
@@ -63,8 +61,7 @@ public class PlanReadService {
                     if(strategy==null||!Set.of("RATE_RISK","INTEREST_SAVING","PARALLEL","MANUAL","NONE","FAST","BALANCED","STABLE","SAVINGS").contains(strategy))throw ApiException.unavailable();
                     var allocations=source.plannedAllocations(user,month);
                     if(allocations==null)throw ApiException.unavailable();
-                    var seen=new HashSet<Long>();
-                    for(var a:allocations){if(a==null||!active.contains(a.loanId())||!seen.add(a.loanId())||a.cashAmount()<0||a.priority()!=null&&a.priority()<1)throw ApiException.unavailable();if(a.priority()!=null)priorities.put(a.loanId(),a.priority());}
+                    for(var a:activeOwnedAmounts(user,active,allocations))if(a.priority()!=null)priorities.put(a.loanId(),a.priority());
                 }
             }
         }
@@ -89,6 +86,20 @@ public class PlanReadService {
         for(var key:List.of("target_progress_percent","planned_paid_amount","actual_paid_amount","difference"))progress.putNull(key);
         progress.put("data_status","INSUFFICIENT");data.putArray("scenarios");data.put("overall_access",overall);data.put("strategy_code",strategy);data.put("overall_plan_exists",exists);
         data.put("data_revision","rev-"+revisions.current(user)+"-"+today);return data;
+    }
+    private List<PlannedAmount> activeOwnedAmounts(long user,List<Long> active,List<PlannedAmount> amounts) {
+        var seen=new HashSet<Long>();var result=new ArrayList<PlannedAmount>();
+        for(var a:amounts) {
+            if(a==null||!seen.add(a.loanId())||a.cashAmount()<0||a.allocationType()==null
+                    ||a.priority()!=null&&a.priority()<1)throw ApiException.unavailable();
+            if(!active.contains(a.loanId())) {
+                // Owner-scoped lookup distinguishes a retained closed loan from a foreign/missing reference.
+                if(loans.loan(user,a.loanId()).storedStatus()==LoanStatus.ACTIVE)throw ApiException.unavailable();
+                continue;
+            }
+            result.add(a);
+        }
+        return List.copyOf(result);
     }
     private static Long add(Long a,Long b){return a==null||b==null?null:Math.addExact(a,b);}
 }

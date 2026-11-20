@@ -70,6 +70,25 @@ class MonthlyPlanPortIntegrationTest {
     PlanPresentationPort.PlanView view(long u,int m,List<PlannedAmount> overrides){return views.monthViews(u,LocalDate.now(clock),month(m),overrides).getFirst();}
     void completePayments(){when(paymentProof.find(any())).thenAnswer(inv->{var scope=inv.<com.loanrun.payment.read.PaymentObservation.Scope>getArgument(0);var p=payments.snapshot(scope.userId(),scope.month(),scope.loanId());return Optional.of(new com.loanrun.payment.read.PaymentObservation.Confirmation(scope,p.fingerprint(),p.recorded().paymentCount()==0?com.loanrun.payment.read.PaymentObservation.Kind.ZERO_CONFIRMED:com.loanrun.payment.read.PaymentObservation.Kind.RECORDING_COMPLETE,clock.instant()));});}
     void completeSavings(){when(savingProof.find(any())).thenAnswer(inv->{var scope=inv.<com.loanrun.repaymentsaving.read.SavingObservation.Scope>getArgument(0);var p=savings.snapshot(scope.userId(),scope.loanId(),scope.month());return Optional.of(new com.loanrun.repaymentsaving.read.SavingObservation.Confirmation(scope,p.fingerprint(),p.recorded().count()==0?com.loanrun.repaymentsaving.read.SavingObservation.Kind.ZERO_CONFIRMED:com.loanrun.repaymentsaving.read.SavingObservation.Kind.RECORDING_COMPLETE,clock.instant()));});}
+    @Test void closedLoanOverridesDoNotPoisonCurrentOrFutureHouseholdViews()throws Exception {
+        for(String status:List.of("DELETED","PAID")) {
+            long u=user(),closed=loan(u,false);
+            jdbc.update("UPDATE loans SET status=?,updated_at=? WHERE id=?",status,Timestamp.from(clock.instant()),closed);
+            var overrides=List.of(new PlannedAmount(closed,AllocationType.EXTRA_PAYMENT,100000,null));
+            assertThat(views.monthViews(u,day(3,1),month(3),overrides)).isEmpty();
+            assertThat(views.monthViews(u,day(3,1),month(4),overrides)).isEmpty();
+            long active=loan(u,false);
+            assertThat(views.monthViews(u,day(3,1),month(3),overrides)).singleElement().satisfies(v->assertThat(v.loanId()).isEqualTo(active));
+            assertThat(loans.terms(u,active,day(3,1)).status()).isEqualTo(LoanStatus.ACTIVE);
+            assertThat(jdbc.queryForObject("SELECT status FROM loans WHERE id=?",String.class,closed)).isEqualTo(status);
+        }
+    }
+    @Test void closedForeignOverrideStillFailsOwnershipValidation()throws Exception {
+        long u=user(),other=user(),id=loan(other,false);
+        jdbc.update("UPDATE loans SET status='DELETED' WHERE id=?",id);
+        assertThatThrownBy(()->views.monthViews(u,day(3,1),month(3),List.of(new PlannedAmount(id,AllocationType.EXTRA_PAYMENT,10,null))))
+            .isInstanceOfSatisfying(ApiException.class,e->assertThat(e.status().value()).isEqualTo(404));
+    }
     @Test void currentOverrideChangesMonthlyDisplayWithoutChangingTheRecurringGoalOrVersion()throws Exception {
         long u=user(),id=loan(u,false);extra(u,id,3,500000);
         var before=jdbc.queryForList("SELECT * FROM repayment_plan_versions WHERE user_id=?",u);

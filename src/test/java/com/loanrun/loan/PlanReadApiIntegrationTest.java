@@ -57,6 +57,15 @@ class PlanReadApiIntegrationTest {
         return registration.create(owner,body,null).body().path("data").path("loan_id").longValue();
     }
     JsonNode list(HttpClient b,String query)throws Exception {var r=get(b,"/api/repayment-plans/"+query);assertThat(r.statusCode()).as(r.body()).isEqualTo(200);assertThat(json(r).path("code").asText()).isEqualTo("REPAYMENT_PLAN_LIST_SUCCESS");return json(r).path("data");}
+    @Test void closedLoanOverrideDoesNotBreakRemainingActivePlan()throws Exception {
+        for(String status:List.of("DELETED","PAID")) {
+            var browser=browser();long u=owner(browser),closed=loan(u,false,true),active=loan(u,false,true);
+            jdbc.update("UPDATE loans SET status=? WHERE id=?",status,closed);
+            when(budget.monthlyOverrides(org.mockito.ArgumentMatchers.eq(u),any())).thenReturn(List.of(new PlannedAmount(closed,AllocationType.EXTRA_PAYMENT,100000,null)));
+            assertThat(list(browser,"").path("plans")).hasSize(1);
+            assertThat(list(browser,"").path("plans").get(0).path("loan_id").longValue()).isEqualTo(active);
+        }
+    }
     @Test void emptyFreeUserGetsExactEnvelopeAndNoInventedProjection()throws Exception {
         var b=browser();var d=list(b,"");assertThat(d.path("plans").size()).isZero();assertThat(d.path("overall_access").asText()).isEqualTo("LOCKED");
         assertThat(d.path("aggregate").path("estimated_payoff_date").isNull()).isTrue();assertThat(d.path("progress").path("progress_percent").isNull()).isTrue();
