@@ -2,6 +2,7 @@ package com.loanrun.repaymentplan.service;
 
 import com.loanrun.common.contract.FinanceModels.*;
 import com.loanrun.common.contract.RepaymentEngine;
+import com.loanrun.common.contract.PlanPresentationPort.Track;
 import com.loanrun.common.error.ApiException;
 import com.loanrun.loan.domain.LoanSavingsCalculator;
 import com.loanrun.loan.read.LoanSourceRepository;
@@ -14,6 +15,7 @@ import com.loanrun.repaymentsaving.service.SavingObservationQueryService;
 import com.loanrun.repaymentplan.domain.*;
 import com.loanrun.repaymentplan.domain.PlanPerformanceCalculator.*;
 import java.time.*;
+import java.math.BigDecimal;
 import java.time.temporal.ChronoUnit;
 import java.util.*;
 import org.springframework.beans.factory.ObjectProvider;
@@ -69,7 +71,19 @@ public class PlanPerformanceQueryService {
         if(!plan.configured())return new Result(today,knownAt,plan,null,null,null,null,Reason.NOT_CONFIGURED);
         if(plan.basisTerms()!=null&&plan.basisTerms().method()!=loan.method())throw ApiException.unavailable();
         var schedule=schedules.throughMonth(plan,month);
-        if(plan.effectiveDate().isAfter(today))return new Result(today,knownAt,plan,schedule,null,null,null,Reason.NOT_EFFECTIVE);
+        if(plan.effectiveDate().isAfter(today)) {
+            var registration=loan.createdAt().atZone(KST).toLocalDate();
+            boolean earlierPayment=snapshot.payments().stream().anyMatch(p->!p.paidAt().isBefore(registration)&&!p.paidAt().isAfter(today));
+            if(earlierPayment&&plan.startPrincipal()!=null&&schedule.planned()!=null) {
+                // The next-cycle plan has not started. Recorded earlier payments are excluded from its progress.
+                var empty=new Comparison(null,null,null,null);
+                var status=regularStatus(userId,loanId,registration,today);
+                var track=new Track(null,"INSUFFICIENT",status==null?null:status.name());
+                var zero=new Performance(BigDecimal.ZERO,BigDecimal.ZERO,empty,empty,empty,empty,null,track);
+                return new Result(today,knownAt,plan,schedule,null,null,zero,Reason.NOT_EFFECTIVE);
+            }
+            return new Result(today,knownAt,plan,schedule,null,null,null,Reason.NOT_EFFECTIVE);
+        }
         var currentFrom=plan.effectiveDate().isAfter(month.atDay(1))?plan.effectiveDate():month.atDay(1);
         var monthly=recorded(snapshot,currentFrom,today);var cumulative=recorded(snapshot,plan.effectiveDate(),today);
         boolean bullet=loan.method()==RepaymentMethod.BULLET;

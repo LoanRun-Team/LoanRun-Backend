@@ -6,6 +6,7 @@ import com.loanrun.finance.engine.RepaymentDates;
 import com.loanrun.finance.engine.RepaymentMath;
 import com.loanrun.loan.read.LoanSources.*;
 import java.time.LocalDate;
+import java.time.ZoneId;
 import java.util.TreeMap;
 
 /** Shared current asset math. Date totals do not assert an intraday order across two independent ledgers. */
@@ -20,11 +21,12 @@ public final class LoanSavingsCalculator {
     }
     private static long balance(Loan loan,Snapshot source,LocalDate additionDate,long addition) {
         var changes=new TreeMap<LocalDate,Long>();
-        for(var saving:source.savings())if(saving.loanId()==loan.loanId())
+        var registered=loan.createdAt().atZone(ZoneId.of("Asia/Seoul")).toLocalDate();
+        for(var saving:source.savings())if(saving.loanId()==loan.loanId()&&!saving.savedAt().isBefore(registered))
             changes.merge(saving.savedAt(),saving.amount(),Math::addExact);
-        for(var payment:source.payments())if(payment.loanId()==loan.loanId())
+        for(var payment:source.payments())if(payment.loanId()==loan.loanId()&&!payment.paidAt().isBefore(registered))
             changes.merge(payment.paidAt(),-payment.savingsUsed(),Math::addExact);
-        if(additionDate!=null)changes.merge(additionDate,addition,Math::addExact);
+        if(additionDate!=null&&!additionDate.isBefore(registered))changes.merge(additionDate,addition,Math::addExact);
         long balance=loan.initialSavings();
         for(long change:changes.values()) {
             balance=Math.addExact(balance,change);

@@ -81,6 +81,17 @@ class SavingCreateIntegrationTest {
     long revision(long user){return jdbc.queryForObject("SELECT revision FROM demo_users WHERE id=?",Long.class,user);}
     String key(){return UUID.randomUUID().toString();}
 
+    @Test void historicalSavingRecordsActualMonthWithoutIncreasingCurrentAssets()throws Exception {
+        var b=browser();long user=owner(b),id=loan(b,input());
+        var old=request(id,100000);old.put("saved_at","2026-02-25");
+        var r=post(b,old.toString(),key());assertThat(r.statusCode()).as(r.body()).isEqualTo(201);
+        assertThat(json(r).path("data").path("savings_balance").longValue()).isEqualTo(2000000);
+        assertThat(json(r).path("data").path("saving").path("editable").booleanValue()).isFalse();
+        var current=request(id,50000);var newer=post(b,current.toString(),key());assertThat(newer.statusCode()).as(newer.body()).isEqualTo(201);
+        assertThat(json(newer).path("data").path("savings_balance").longValue()).isEqualTo(2050000);
+        assertThat(list(b,id,"&from=2026-02-01&to=2026-02-28").path("results").size()).isEqualTo(1);
+    }
+
     @Test void createsRealSavingAndReusesListProjectionWithoutChangingPrincipalOrDues()throws Exception {
         var b=browser();long user=owner(b),id=loan(b,input());clearInvocations(budgets);
         var before=sources.loanSnapshot(user,id,LocalDate.of(2026,3,1));long revision=revision(user);

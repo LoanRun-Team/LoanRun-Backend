@@ -235,6 +235,10 @@ Loan deletion: `DELETE /api/loans/{loan_id}/` archives the owner's loan as DELET
 Any actual payment blocks deletion with 409 LOAN_HAS_PAYMENTS. The key is optional; actual budget
 recalculation is required. See [loan deletion, preserved history and integration](docs/LOAN_DELETE.md).
 
+Newly registered loans accept a first variable-rate change on the registration date. Older payment and
+saving entries can be recorded as historical facts without reapplying them to the current opening balance;
+see [date boundaries and historical entry inputs](docs/NEW_LOAN_DATE_BOUNDARIES.md).
+
 Flyway V4 provides immutable plan versions, application events and original due archives after V3.1.
 It preserves V2 registration version 1 and appends later versions. Existing database histories must be
 inspected before migration; see [migration review](docs/MIGRATION_V2_REVIEW.md).

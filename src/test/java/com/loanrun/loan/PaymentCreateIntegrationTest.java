@@ -61,6 +61,26 @@ class PaymentCreateIntegrationTest {
     HttpResponse<String> post(HttpClient b,JsonNode body,String key)throws Exception {var r=HttpRequest.newBuilder(URI.create("http://localhost:"+port+"/api/payments/")).header("Origin","http://localhost:5173").header("Content-Type","application/json");if(key!=null)r.header("Idempotency-Key",key);return b.send(r.POST(HttpRequest.BodyPublishers.ofString(body.toString())).build(),HttpResponse.BodyHandlers.ofString());}
     com.fasterxml.jackson.databind.node.ObjectNode body(long id,boolean extra,long amount)throws Exception {var n=mapper.createObjectNode();n.put("loan_id",id);n.put("paid_at","2026-03-01");n.put("payment_type",extra?"EXTRA":"REGULAR");n.put("amount",amount);if(!extra)n.put("due_item_id",jdbc.queryForObject("SELECT id FROM due_items WHERE loan_id=? ORDER BY due_date,id LIMIT 1",Long.class,id));return n;}
     JsonNode ok(HttpClient b,JsonNode n,String key)throws Exception{var r=post(b,n,key);assertThat(r.statusCode()).as(r.body()).isEqualTo(201);assertThat(json(r).path("code").asText()).isEqualTo("PAYMENT_CREATE_SUCCESS");return json(r).path("data");}
+    @Test void historicalPaymentIsRecordedWithoutReapplyingItToRegistrationBalance()throws Exception {
+        var b=browser();long user=owner(b),id=loan(user,false,true);long balance=sources.loan(user,id).storedRemainingPrincipal();
+        var old=body(id,true,100000);old.put("paid_at","2026-02-25");old.put("principal_amount",0);old.put("extra_amount",90000);old.put("interest_amount",0);old.put("fee_amount",10000);
+        var saved=ok(b,old,"historical-extra");
+        assertThat(saved.path("remaining_principal").longValue()).isEqualTo(balance);
+        assertThat(saved.path("payment").path("editable").booleanValue()).isFalse();
+        assertThat(jdbc.queryForObject("SELECT count(*) FROM payments WHERE loan_id=? AND paid_at='2026-02-25'",Long.class,id)).isEqualTo(1);
+        var normal=body(id,true,100000);ok(b,normal,"current-extra");
+        assertThat(sources.loan(user,id).storedRemainingPrincipal()).isEqualTo(balance-100000);
+    }
+    @Test void historicalRegularRequiresConfirmedComponentsAndHasNoInventedDue()throws Exception {
+        var b=browser();long user=owner(b),id=loan(user,false,true);long balance=sources.loan(user,id).storedRemainingPrincipal();
+        var old=body(id,false,150000);old.put("paid_at","2026-02-25");old.remove("due_item_id");
+        assertThat(post(b,old,"history-auto").statusCode()).isEqualTo(400);
+        old.put("principal_amount",100000);old.put("extra_amount",0);old.put("interest_amount",50000);old.put("fee_amount",0);
+        var recorded=ok(b,old,"history-components");
+        assertThat(recorded.path("payment").path("due_item_id").isNull()).isTrue();
+        assertThat(recorded.path("remaining_principal").longValue()).isEqualTo(balance);
+        assertThat(jdbc.queryForObject("SELECT count(*) FROM payment_allocations WHERE loan_id=?",Long.class,id)).isZero();
+    }
     @Test void regularAllocatesInterestThenPrincipalUpdatesBalanceAndCreatesNextActualDue()throws Exception {
         var b=browser();long user=owner(b),id=loan(user,false,true),rev=revisions.current(user);var original=sources.loan(user,id).initialPlan();var d=ok(b,body(id,false,1260000),"regular");
         assertThat(d.path("payment").path("principal_amount").longValue()).isEqualTo(1200000);assertThat(d.path("payment").path("interest_amount").longValue()).isEqualTo(60000);assertThat(d.path("remaining_principal").longValue()).isEqualTo(10800000);assertThat(d.path("updated_schedule").path("status").asText()).isEqualTo("PAID");
@@ -68,6 +88,8 @@ class PaymentCreateIntegrationTest {
     }
     @Test void partialAndExtraAreDifferentAndCurrentCycleInterestIsFrozen()throws Exception {
         var b=browser();long user=owner(b),id=loan(user,false,true);var extra=ok(b,body(id,true,100000),"extra");assertThat(extra.path("updated_schedule").path("status").asText()).isEqualTo("UPCOMING");assertThat(extra.path("remaining_principal").longValue()).isEqualTo(11900000);
+        assertThat(extra.path("updated_plan").path("planned_progress_pct").decimalValue()).isEqualByComparingTo("0");
+        assertThat(extra.path("updated_plan").path("actual_progress_pct").decimalValue()).isEqualByComparingTo("0");
         var regular=ok(b,body(id,false,50000),"partial");assertThat(regular.path("updated_schedule").path("status").asText()).isEqualTo("PARTIAL");assertThat(regular.path("payment").path("principal_amount").longValue()).isZero();assertThat(jdbc.queryForObject("SELECT interest_amount FROM due_items WHERE loan_id=?",Long.class,id)).isEqualTo(60000);
     }
     @Test void canonicalReplayAndDistinctIdenticalRecordsArePreserved()throws Exception {

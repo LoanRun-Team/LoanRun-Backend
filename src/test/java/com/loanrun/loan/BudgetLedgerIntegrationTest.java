@@ -76,4 +76,30 @@ class BudgetLedgerIntegrationTest {
         assertThat(budgets.capacity(otherOwner,month).availableCash()).isNull();
         assertThat(loans.activeLoans(otherOwner,month.atDay(1))).isEmpty();
     }
+    @Test void historicalSavingUsesRealBudgetProviderWithoutReapplyingOpeningBalance()throws Exception {
+        var b=browser();long owner=mapper.readTree(call(b,"GET","/api/users/me/",null).body()).path("data").path("user_id").asLong();
+        var profile="""
+            {"monthly_income":3000000,"income_type":"REGULAR","payday":25,
+             "fixed_essential_expenses":800000,"variable_essential_expenses":200000,
+             "discretionary_expenses":500000,"savings":200000}
+            """;
+        assertThat(call(b,"PUT","/api/budgets/profile/",profile).statusCode()).isEqualTo(200);
+        var input=new LoanPreviewTest().body();input.put("repayment_method","BULLET");input.putNull("prepayment_policy");input.put("initial_savings_balance",2000000);
+        var created=call(b,"POST","/api/loans/",input.toString());assertThat(created.statusCode()).as(created.body()).isEqualTo(201);
+        long id=mapper.readTree(created.body()).path("data").path("loan_id").asLong();
+        var request=HttpRequest.newBuilder(URI.create("http://localhost:"+port+"/api/repayment-savings/"))
+            .header("Origin","http://localhost:5173").header("Content-Type","application/json")
+            .header("Idempotency-Key","historical-real-budget-"+owner)
+            .POST(HttpRequest.BodyPublishers.ofString("{\"loan_id\":"+id+",\"saved_at\":\"2025-12-25\",\"amount\":100000}"));
+        var response=b.send(request.build(),HttpResponse.BodyHandlers.ofString());
+        assertThat(response.statusCode()).as(response.body()).isEqualTo(201);
+        assertThat(mapper.readTree(response.body()).path("data").path("savings_balance").asLong()).isEqualTo(2000000);
+        var payment=HttpRequest.newBuilder(URI.create("http://localhost:"+port+"/api/payments/"))
+            .header("Origin","http://localhost:5173").header("Content-Type","application/json")
+            .header("Idempotency-Key","historical-real-payment-"+owner)
+            .POST(HttpRequest.BodyPublishers.ofString("{\"loan_id\":"+id+",\"paid_at\":\"2025-12-25\",\"payment_type\":\"REGULAR\",\"amount\":100,\"principal_amount\":0,\"extra_amount\":0,\"interest_amount\":100,\"fee_amount\":0}"));
+        var paid=b.send(payment.build(),HttpResponse.BodyHandlers.ofString());
+        assertThat(paid.statusCode()).as(paid.body()).isEqualTo(201);
+        assertThat(mapper.readTree(paid.body()).path("data").path("remaining_principal").asLong()).isEqualTo(12000000);
+    }
 }

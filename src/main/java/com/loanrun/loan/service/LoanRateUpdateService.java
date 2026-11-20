@@ -37,7 +37,11 @@ public class LoanRateUpdateService {
         BigDecimal rate=node.decimalValue();if(rate.signum()<0||rate.compareTo(BigDecimal.valueOf(30))>=0||rate.stripTrailingZeros().scale()>2)throw ApiException.validation("annual_rate","금리를 확인해 주세요.");
         if(loan.rateType()!=RateType.VARIABLE)throw new ApiException(HttpStatus.BAD_REQUEST,"RATE_CHANGE_NOT_ALLOWED","고정금리 대출은 금리 변경 기록을 등록할 수 없습니다.");
         LocalDate today=LocalDate.now(clock.withZone(ZoneId.of("Asia/Seoul")));if(date.isAfter(today))throw ApiException.validation("effective_date","미래 금리를 예약할 수 없습니다.");
-        var latest=writes.latestRateDate(user,id);if(!date.isAfter(loan.latestSnapshotDate())||latest!=null&&!date.isAfter(latest))throw conflict();
+        var latest=writes.latestRateDate(user,id);
+        boolean initialSameDay=latest!=null&&latest.equals(date)&&date.equals(loan.latestSnapshotDate())
+            &&loan.createdAt().atZone(ZoneId.of("Asia/Seoul")).toLocalDate().equals(date)
+            &&writes.onlyRegistrationRateOn(user,id,date);
+        if(date.isBefore(loan.latestSnapshotDate())||latest!=null&&!date.isAfter(latest)&&!initialSameDay)throw conflict();
         var basis=current.current(user,id);if(basis.terms()==null)throw conflict();var old=basis.terms();
         var source=sources.visibleLoanSnapshot(user,id,today);
         for(var due:source.dues())if(!due.dueDate().isBefore(old.nextDueDate())&&(due.confirmedUnpaid()||due.fee()!=0||source.allocations().stream().anyMatch(a->a.dueItemId()==due.id())))throw conflict();

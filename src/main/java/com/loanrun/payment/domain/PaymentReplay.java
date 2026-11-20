@@ -69,8 +69,9 @@ public final class PaymentReplay {
     private static void fail(PaymentRequest p){if(p.edited())throw PaymentRequest.invalid();throw new Conflict();}
     private static void verifySavings(Loan loan,Snapshot source,List<PaymentRequest> next,Set<Long> oldIds) {
         LoanSavingsCalculator.balance(loan,source);var days=new TreeMap<LocalDate,BigInteger[]>();
-        for(var s:source.savings())day(days,s.savedAt())[0]=day(days,s.savedAt())[0].add(BigInteger.valueOf(s.amount()));
-        for(var p:source.payments()){var d=day(days,p.paidAt());d[1]=d[1].add(BigInteger.valueOf(p.savingsUsed()));if(!oldIds.contains(p.id()))d[2]=d[2].add(BigInteger.valueOf(p.savingsUsed()));}
+        var registered=loan.createdAt().atZone(ZoneId.of("Asia/Seoul")).toLocalDate();
+        for(var s:source.savings())if(!s.savedAt().isBefore(registered))day(days,s.savedAt())[0]=day(days,s.savedAt())[0].add(BigInteger.valueOf(s.amount()));
+        for(var p:source.payments())if(!p.paidAt().isBefore(registered)){var d=day(days,p.paidAt());d[1]=d[1].add(BigInteger.valueOf(p.savingsUsed()));if(!oldIds.contains(p.id()))d[2]=d[2].add(BigInteger.valueOf(p.savingsUsed()));}
         for(var p:next){var d=day(days,p.date());d[2]=d[2].add(BigInteger.valueOf(p.used()));}
         BigInteger old=BigInteger.valueOf(loan.initialSavings()),balance=old,max=BigInteger.valueOf(Long.MAX_VALUE);
         for(var d:days.values()) {var difference=balance.subtract(old);var after=difference.subtract(d[2].subtract(d[1]));if(difference.min(after).signum()<0&&balance.compareTo(d[2])<0)throw new Conflict();old=old.add(d[0]).subtract(d[1]);balance=balance.add(d[0]).subtract(d[2]);if(balance.signum()<0||balance.compareTo(max)>0)throw new Conflict();}

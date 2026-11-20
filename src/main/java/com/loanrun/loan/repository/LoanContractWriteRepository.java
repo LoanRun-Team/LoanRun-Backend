@@ -24,6 +24,12 @@ public class LoanContractWriteRepository {
     public LocalDate latestRateDate(long user,long id) {
         return jdbc.queryForObject("SELECT max(effective_date) FROM loan_rate_histories WHERE user_id=:user AND loan_id=:id",Map.of("user",user,"id",id),LocalDate.class);
     }
+    public boolean onlyRegistrationRateOn(long user,long id,LocalDate date) {
+        return Boolean.TRUE.equals(jdbc.queryForObject("""
+            SELECT count(*)=1 AND min(effective_date)=:date
+            FROM loan_rate_histories WHERE user_id=:user AND loan_id=:id
+            """,new MapSqlParameterSource().addValue("user",user).addValue("id",id).addValue("date",date),Boolean.class));
+    }
     public long insertRate(long user,long id,LocalDate date,BigDecimal rate,Instant now) {
         return jdbc.queryForObject("INSERT INTO loan_rate_histories(user_id,loan_id,effective_date,annual_rate,created_at) VALUES (:user,:id,:date,:rate,:now) RETURNING id",
             new MapSqlParameterSource().addValue("user",user).addValue("id",id).addValue("date",date).addValue("rate",rate).addValue("now",Timestamp.from(now)),Long.class);

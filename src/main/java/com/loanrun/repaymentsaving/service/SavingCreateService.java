@@ -55,9 +55,11 @@ public class SavingCreateService {
         } catch(DateTimeParseException ex) {throw invalid();}
         var now=clock.instant();var today=now.atZone(ZoneId.of("Asia/Seoul")).toLocalDate();
         var loan=writes.lock(userId,loanId);
-        if(!loan.status().equals("ACTIVE")||!loan.method().equals("BULLET")||date.isBefore(loan.snapshotDate())||date.isAfter(today))throw invalid();
+        if(!loan.status().equals("ACTIVE")||!loan.method().equals("BULLET")||date.isAfter(today))throw invalid();
         var budget=budgets.getIfAvailable();if(budget==null)throw ApiException.unavailable();
         var snapshot=sources.loanSnapshot(userId,loanId,today);if(snapshot.loans().size()!=1)throw ApiException.unavailable();
+        var registered=snapshot.loans().getFirst().createdAt().atZone(ZoneId.of("Asia/Seoul")).toLocalDate();
+        if(!date.isBefore(registered)&&date.isBefore(loan.snapshotDate()))throw invalid();
         try {
             LoanSavingsCalculator.balance(snapshot.loans().getFirst(),snapshot);
             LoanSavingsCalculator.balanceAfterAddition(snapshot.loans().getFirst(),snapshot,date,amount);

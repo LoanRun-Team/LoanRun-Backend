@@ -189,6 +189,18 @@ class PlanReadApiIntegrationTest {
         jdbc.update("UPDATE loan_rate_histories SET effective_date='2026-02-28' WHERE loan_id=?",id);return id;
     }
     HttpResponse<String> rate(HttpClient b,long id,String body)throws Exception{return mutate(b,"POST","/api/loans/"+id+"/rate-history/",body);}
+    @Test void registrationDayVariableRateCanChangeOnceButNotTwice()throws Exception {
+        var b=browser();long user=owner(b);var body=new LoanPreviewTest().body();body.put("rate_type","VARIABLE");body.put("rate_reset_months",6);body.put("fee_exempt",true);
+        long id=registration.create(user,body,null).body().path("data").path("loan_id").longValue();
+        long revision=revisions.current(user);
+        var first=rate(b,id,"{\"effective_date\":\"2026-03-01\",\"annual_rate\":7}");
+        assertThat(first.statusCode()).as(first.body()).isEqualTo(201);
+        assertThat(revisions.current(user)).isEqualTo(revision+1);
+        assertThat(json(get(b,"/api/loans/"+id+"/rate-history/")).path("data").path("rates").size()).isEqualTo(2);
+        var duplicate=rate(b,id,"{\"effective_date\":\"2026-03-01\",\"annual_rate\":8}");
+        assertThat(duplicate.statusCode()).as(duplicate.body()).isEqualTo(409);
+        assertThat(revisions.current(user)).isEqualTo(revision+1);
+    }
     @Test void rateWritesOriginalHistoryRepricesOnlyFutureDueAndBumpsOnce()throws Exception {
         var b=browser();long user=owner(b),id=variableLoan(user,"EQUAL_PRINCIPAL",null);var before=sources.loan(user,id);long rev=revisions.current(user);
         clearInvocations(recalc);var r=rate(b,id,"{\"effective_date\":\"2026-03-01\",\"annual_rate\":7}");assertThat(r.statusCode()).as(r.body()).isEqualTo(201);var d=json(r).path("data");
