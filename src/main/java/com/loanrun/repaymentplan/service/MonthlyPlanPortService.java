@@ -52,6 +52,9 @@ public class MonthlyPlanPortService implements PlanPresentationPort {
             for(var o:overrides) {
                 if(o==null||o.cashAmount()<0||o.allocationType()==null||supplied.put(o.loanId(),o)!=null)throw ApiException.unavailable();
                 var loan=loans.loan(user,o.loanId());
+                // Retain the stored historical override, but do not revive a closed loan's current target.
+                // Resolve ownership before excluding it; foreign/missing references remain errors.
+                if(asOf.equals(today)&&!month.isBefore(YearMonth.from(today))&&loan.storedStatus()!=LoanStatus.ACTIVE)continue;
                 if((loan.method()==RepaymentMethod.BULLET)!=(o.allocationType()==AllocationType.REPAYMENT_SAVING))throw ApiException.unavailable();
                 if(selected.stream().noneMatch(l->l.loanId()==loan.loanId()))throw ApiException.unavailable();
             }

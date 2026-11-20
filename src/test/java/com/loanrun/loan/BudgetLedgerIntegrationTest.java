@@ -53,6 +53,33 @@ class BudgetLedgerIntegrationTest {
             .method(method,body==null?HttpRequest.BodyPublishers.noBody():HttpRequest.BodyPublishers.ofString(body))
             .build(),HttpResponse.BodyHandlers.ofString());
     }
+    @Test void retainedAllocationAfterDeletionDoesNotBreakHouseholdEndpoints()throws Exception {
+        var browser=browser();
+        long owner=mapper.readTree(call(browser,"GET","/api/users/me/",null).body()).path("data").path("user_id").longValue();
+        assertThat(call(browser,"PUT","/api/budgets/profile/","""
+            {"monthly_income":3000000,"income_type":"REGULAR","payday":25,
+             "fixed_essential_expenses":800000,"variable_essential_expenses":200000,
+             "discretionary_expenses":500000,"savings":200000}
+            """).statusCode()).isEqualTo(200);
+        var input=new LoanPreviewTest().body();input.put("fee_exempt",true);
+        var created=call(browser,"POST","/api/loans/",input.toString());
+        assertThat(created.statusCode()).as(created.body()).isEqualTo(201);
+        long id=mapper.readTree(created.body()).path("data").path("loan_id").longValue();
+        jdbc.update("UPDATE monthly_budgets SET allocation_overridden=TRUE WHERE user_id=?",owner);
+        jdbc.update("INSERT INTO monthly_allocations(budget_id,loan_id,allocation_type,amount) SELECT id,?,'EXTRA_PAYMENT',100000 FROM monthly_budgets WHERE user_id=?",id,owner);
+        assertThat(call(browser,"DELETE","/api/loans/"+id+"/",null).statusCode()).isEqualTo(200);
+        for(String path:java.util.List.of("/api/payments/schedule/?month=2026-01","/api/payments/monthly-summary/?from_month=2026-01&to_month=2026-01","/api/dashboard/","/api/repayment-plans/")) {
+            var response=call(browser,"GET",path,null);
+            assertThat(response.statusCode()).as(path+": "+response.body()).isEqualTo(200);
+        }
+        var next=call(browser,"POST","/api/loans/",input.toString());
+        assertThat(next.statusCode()).as(next.body()).isEqualTo(201);
+        long active=mapper.readTree(next.body()).path("data").path("loan_id").longValue();
+        var preview=call(browser,"POST","/api/repayment-plans/preview/","{\"plans\":[{\"loan_id\":"+active+",\"mode\":\"MATURITY\"}]}");
+        assertThat(preview.statusCode()).as(preview.body()).isEqualTo(200);
+        assertThat(jdbc.queryForObject("SELECT count(*) FROM monthly_allocations WHERE loan_id=?",Long.class,id)).isEqualTo(1);
+        assertThat(jdbc.queryForObject("SELECT status FROM loans WHERE id=?",String.class,id)).isEqualTo("DELETED");
+    }
     @Test void realRegistrationRecalculatesBudgetAndSeparatesOwners()throws Exception {
         var browser=browser();
         long owner=mapper.readTree(call(browser,"GET","/api/users/me/",null).body()).path("data").path("user_id").longValue();
