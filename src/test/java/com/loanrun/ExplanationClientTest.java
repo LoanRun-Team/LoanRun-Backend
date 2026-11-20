@@ -76,6 +76,23 @@ class ExplanationClientTest {
             assertThat(new ExplanationClient(builder.build(),mapper,true,"test-token","configured-fixture-model").explain(facts).source()).isEqualTo("FALLBACK");server.verify();
         }
     }
+    @Test void naturalKoreanWordsDoNotFalsePositiveWhileSpelledQuantitiesStillFallback()throws Exception{
+        for(String text:java.util.List.of(
+                "이번 달 상환 흐름과 현재 조건을 확인해 주세요.",
+                "이달 입력한 원금과 상환 일정을 다시 조회해 주세요.",
+                "만일 지출이 변동되면 적절한 배분을 유지하고 자금 조달 상태를 점검해 주세요.",
+                "지출이 원활하게 관리되고 있으며 이 원금은 계획대로 줄어듭니다.")){
+            var builder=RestClient.builder().baseUrl("https://api.openai.com/v1");var server=MockRestServiceServer.bindTo(builder).build();
+            server.expect(anything()).andRespond(withSuccess(response(text,"실제 기록을 확인해 주세요."),MediaType.APPLICATION_JSON));
+            var result=new ExplanationClient(builder.build(),mapper,true,"test-token","configured-fixture-model").explain(facts);
+            assertThat(result.source()).as(text).isEqualTo("MODEL");
+            assertThat(result.summary()).isEqualTo(text);
+            server.verify();
+        }
+        for(String text:java.util.List.of("두 번 상환하세요.","삼 개월 뒤 완납합니다.","십만원씩 적립하세요.","두배로 늘어납니다.","하루 만에 끝납니다.","한 달만에 완납합니다.","오년 이상 유지하세요.")){
+            assertFallback(response(text,"실제 기록을 확인해 주세요."));
+        }
+    }
     void assertFallback(String payload){
         var builder=RestClient.builder().baseUrl("https://api.openai.com/v1");var server=MockRestServiceServer.bindTo(builder).build();
         server.expect(anything()).andRespond(withSuccess(payload,MediaType.APPLICATION_JSON));
